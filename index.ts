@@ -78,13 +78,14 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
 
   if (email === adminEmail && password === adminPassword) {
     if (req.session) {
-      req.session.isAdmin = true;
+      req.session.isAdmin = true; // agora reconhecido pelo TS
     }
     return res.json({ success: true });
   }
 
   return res.status(401).json({ error: "Invalid credentials" });
 });
+
 
 app.post("/api/auth/logout", requireAdmin, (req: Request, res: Response) => {
   if (req.session) {
