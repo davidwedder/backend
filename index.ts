@@ -10,9 +10,18 @@ import { prisma } from "./lib/db";
 import { uploadToBlob, deleteFromBlob } from "./lib/blob";
 import sharp from "sharp";
 import cors from "cors";
+import "express-session";
+
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+declare module "express-session" {
+  interface SessionData {
+    isAdmin?: boolean;
+  }
+}
 
 dotenv.config();
 
@@ -60,6 +69,7 @@ const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
   }
   return res.status(401).json({ error: "Unauthorized" });
 };
+
 
 app.post("/api/auth/login", (req: Request, res: Response) => {
   const { email, password } = req.body;
