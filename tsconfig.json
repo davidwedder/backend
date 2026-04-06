@@ -14,7 +14,8 @@
     "noEmit": false,
     "types": ["node"],
     "outDir": "./dist",
-    "rootDir": "./"
+    "rootDir": "./",
+    "ignoreDeprecations": "6.0"
   },
   "include": [
     "**/*.ts",
