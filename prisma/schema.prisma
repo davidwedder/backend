@@ -23,7 +23,7 @@ model cars {
 }
 
 model store_settings {
-  id              Int     @id @default(autoincrement())
+  id              Int     @id              // ← removido autoincrement, id sempre será 1
   phone           String
   email           String
   address         String

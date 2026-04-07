@@ -18,6 +18,7 @@ async function main() {
       about_image_url: "",
     },
     create: {
+      id: 1, // ← linha adicionada
       phone: "+55 (00) 0000-0000",
       email: "contato@feautos.com",
       address: "Sua cidade, Estado",

@@ -6,13 +6,10 @@ import session from "express-session";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import { prisma } from "./lib/db";
-import { uploadToBlob, deleteFromBlob } from "./lib/blob";
+import { prisma } from "./lib/db.js";
+import { uploadToBlob, deleteFromBlob } from "./lib/blob.js";
 import sharp from "sharp";
 import cors from "cors";
-import "express-session";
-
-
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,25 +30,18 @@ const allowedOrigins = [
   "http://localhost:5173",
 ];
 
-// CORS configuration
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
     return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
 }));
 
-// Configuração para confiar no proxy
 app.set("trust proxy", 1);
-
-// Middleware
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Session configuration
 app.use(session({
   secret: process.env.SESSION_SECRET || "your-secret-key",
   resave: false,
@@ -59,69 +49,39 @@ app.use(session({
   cookie: {
     secure: process.env.NODE_ENV === "production",
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    maxAge: 24 * 60 * 60 * 1000,
   },
 }));
 
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
 const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
-  if (req.session?.isAdmin) {
-    return next();
-  }
+  if (req.session?.isAdmin) return next();
   return res.status(401).json({ error: "Unauthorized" });
 };
 
+// ─── Multer ───────────────────────────────────────────────────────────────────
 
-app.post("/api/auth/login", (req: Request, res: Response) => {
-  const { email, password } = req.body;
-  const adminEmail = process.env.ADMIN_EMAIL || "admin@feautos.com";
-  const adminPassword = process.env.ADMIN_PASSWORD || "your-admin-password";
-
-  if (email === adminEmail && password === adminPassword) {
-    if (req.session) {
-      req.session.isAdmin = true; // agora reconhecido pelo TS
-    }
-    return res.json({ success: true });
-  }
-
-  return res.status(401).json({ error: "Invalid credentials" });
-});
-
-
-app.post("/api/auth/logout", requireAdmin, (req: Request, res: Response) => {
-  if (req.session) {
-    req.session.destroy((err) => {
-      if (err) {
-        return res.status(500).json({ error: "Failed to logout" });
-      }
-      return res.json({ success: true });
-    });
-  } else {
-    return res.json({ success: true });
-  }
-});
-
-app.get("/api/auth/status", (req: Request, res: Response) => {
-  res.json({ authenticated: !!req.session?.isAdmin });
-});
-
-// Multer Setup for Image Uploads
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit per file
-    files: 10 // Maximum 10 images per vehicle
-  },
+  limits: { fileSize: 10 * 1024 * 1024, files: 10 },
 });
 
-// Upload fallback local
+// ─── Upload local (fallback sem Blob) ────────────────────────────────────────
+
 const localUploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(localUploadsDir)) {
   fs.mkdirSync(localUploadsDir, { recursive: true });
 }
 
-const saveBufferToLocalUploads = async (buffer: Buffer, filename: string): Promise<string> => {
-  const safeName = filename.replace(/[^a-zA-Z0-9._/-]/g, "_").replace(/\.\./g, "_");
+const saveBufferToLocalUploads = async (
+  buffer: Buffer,
+  filename: string
+): Promise<string> => {
+  const safeName = filename
+    .replace(/[^a-zA-Z0-9._/-]/g, "_")
+    .replace(/\.\./g, "_");
   const base = path.basename(safeName);
   const outName = `${Date.now()}-${Math.random().toString(36).slice(2)}-${base}`;
   const outPath = path.join(localUploadsDir, outName);
@@ -129,20 +89,54 @@ const saveBufferToLocalUploads = async (buffer: Buffer, filename: string): Promi
   return `/uploads/${outName}`;
 };
 
+const processImage = async (file: Express.Multer.File): Promise<string> => {
+  const compressed = await sharp(file.buffer)
+    .resize(1200, 800, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 80 })
+    .toBuffer();
+
+  return process.env.BLOB_READ_WRITE_TOKEN
+    ? await uploadToBlob(compressed, file.originalname)
+    : await saveBufferToLocalUploads(compressed, file.originalname);
+};
+
 const normalizeCar = (car: any) => ({
   ...car,
   images: typeof car.images === "string" ? JSON.parse(car.images) : car.images,
 });
 
-// API Routes
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 
-// Health check
-app.get("/api/health", (req: Request, res: Response) => {
+app.get("/api/health", (_req: Request, res: Response) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// Get all cars
-app.get("/api/cars", async (req: Request, res: Response) => {
+app.post("/api/auth/login", (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  const adminEmail = process.env.ADMIN_EMAIL || "admin@feautos.com";
+  const adminPassword = process.env.ADMIN_PASSWORD || "your-admin-password";
+
+  if (email === adminEmail && password === adminPassword) {
+    req.session.isAdmin = true;
+    return res.json({ success: true });
+  }
+  return res.status(401).json({ error: "Invalid credentials" });
+});
+
+app.post("/api/auth/logout", requireAdmin, (req: Request, res: Response) => {
+  req.session.destroy((err) => {
+    if (err) return res.status(500).json({ error: "Failed to logout" });
+    return res.json({ success: true });
+  });
+});
+
+app.get("/api/auth/status", (req: Request, res: Response) => {
+  res.json({ authenticated: !!req.session?.isAdmin });
+});
+
+// ─── Cars ─────────────────────────────────────────────────────────────────────
+
+app.get("/api/cars", async (_req: Request, res: Response) => {
   try {
     const cars = await prisma.cars.findMany({
       orderBy: { created_at: "desc" },
@@ -154,18 +148,12 @@ app.get("/api/cars", async (req: Request, res: Response) => {
   }
 });
 
-// Get car by ID
 app.get("/api/cars/:id", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
     const car = await prisma.cars.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: parseInt(req.params.id) },
     });
-
-    if (!car) {
-      return res.status(404).json({ error: "Car not found" });
-    }
-
+    if (!car) return res.status(404).json({ error: "Car not found" });
     res.json(normalizeCar(car));
   } catch (error) {
     console.error("Error fetching car:", error);
@@ -173,32 +161,17 @@ app.get("/api/cars/:id", async (req: Request, res: Response) => {
   }
 });
 
-// Create car
 app.post("/api/cars", requireAdmin, upload.array("images", 10), async (req: Request, res: Response) => {
   try {
     const { brand, model, year, price, mileage, fuel, transmission, description } = req.body;
     const files = req.files as Express.Multer.File[];
 
-    // Process images
     const imageUrls: string[] = [];
-    if (files && files.length > 0) {
-      for (const file of files) {
-        try {
-          // Compress image
-          const compressedBuffer = await sharp(file.buffer)
-            .resize(1200, 800, { fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-
-          // Upload to blob storage or save locally
-          const imageUrl = process.env.BLOB_READ_WRITE_TOKEN
-            ? await uploadToBlob(compressedBuffer, file.originalname)
-            : await saveBufferToLocalUploads(compressedBuffer, file.originalname);
-
-          imageUrls.push(imageUrl);
-        } catch (error) {
-          console.error("Error processing image:", error);
-        }
+    for (const file of files ?? []) {
+      try {
+        imageUrls.push(await processImage(file));
+      } catch (err) {
+        console.error("Error processing image:", err);
       }
     }
 
@@ -223,36 +196,22 @@ app.post("/api/cars", requireAdmin, upload.array("images", 10), async (req: Requ
   }
 });
 
-// Update car
 app.put("/api/cars/:id", requireAdmin, upload.array("images", 10), async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
     const { brand, model, year, price, mileage, fuel, transmission, description, status } = req.body;
     const files = req.files as Express.Multer.File[];
 
-    // Process new images
     const imageUrls: string[] = [];
-    if (files && files.length > 0) {
-      for (const file of files) {
-        try {
-          const compressedBuffer = await sharp(file.buffer)
-            .resize(1200, 800, { fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-
-          const imageUrl = process.env.BLOB_READ_WRITE_TOKEN
-            ? await uploadToBlob(compressedBuffer, file.originalname)
-            : await saveBufferToLocalUploads(compressedBuffer, file.originalname);
-
-          imageUrls.push(imageUrl);
-        } catch (error) {
-          console.error("Error processing image:", error);
-        }
+    for (const file of files ?? []) {
+      try {
+        imageUrls.push(await processImage(file));
+      } catch (err) {
+        console.error("Error processing image:", err);
       }
     }
 
     const car = await prisma.cars.update({
-      where: { id: parseInt(id) },
+      where: { id: parseInt(req.params.id) },
       data: {
         brand,
         model,
@@ -274,33 +233,25 @@ app.put("/api/cars/:id", requireAdmin, upload.array("images", 10), async (req: R
   }
 });
 
-// Delete car
 app.delete("/api/cars/:id", requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-
-    // Get car to delete associated images
     const car = await prisma.cars.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: parseInt(req.params.id) },
     });
 
-    if (car && car.images) {
-      const images = typeof car.images === "string" ? JSON.parse(car.images) : car.images;
-      if (Array.isArray(images)) {
-        for (const imageUrl of images) {
-          try {
-            await deleteFromBlob(imageUrl);
-          } catch (error) {
-            console.error("Error deleting image:", error);
-          }
+    if (car?.images) {
+      const images = typeof car.images === "string"
+        ? JSON.parse(car.images)
+        : car.images;
+
+      for (const url of Array.isArray(images) ? images : []) {
+        try { await deleteFromBlob(url); } catch (err) {
+          console.error("Error deleting image:", err);
         }
       }
     }
 
-    await prisma.cars.delete({
-      where: { id: parseInt(id) },
-    });
-
+    await prisma.cars.delete({ where: { id: parseInt(req.params.id) } });
     res.status(204).send();
   } catch (error) {
     console.error("Error deleting car:", error);
@@ -308,8 +259,9 @@ app.delete("/api/cars/:id", requireAdmin, async (req: Request, res: Response) =>
   }
 });
 
-// Get store settings
-app.get("/api/settings", async (req: Request, res: Response) => {
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+app.get("/api/settings", async (_req: Request, res: Response) => {
   try {
     const settings = await prisma.store_settings.findFirst();
     res.json(settings);
@@ -319,49 +271,31 @@ app.get("/api/settings", async (req: Request, res: Response) => {
   }
 });
 
-// Update store settings
 app.put("/api/settings", requireAdmin, async (req: Request, res: Response) => {
   try {
     const {
-      phone,
-      email,
-      address,
-      hours_week,
-      hours_saturday,
-      hours_sunday,
-      instagram_url,
-      facebook_url,
-      hero_image_url,
-      about_image_url,
+      phone, email, address,
+      hours_week, hours_saturday, hours_sunday,
+      instagram_url, facebook_url,
+      hero_image_url, about_image_url,
     } = req.body;
 
-    const settings = await prisma.store_settings.upsert({
-      where: { id: 1 },
-      update: {
-        phone,
-        email,
-        address,
-        hours_week,
-        hours_saturday,
-        hours_sunday,
-        instagram_url,
-        facebook_url,
-        hero_image_url,
-        about_image_url,
-      },
-      create: {
-        phone,
-        email,
-        address,
-        hours_week,
-        hours_saturday,
-        hours_sunday,
-        instagram_url,
-        facebook_url,
-        hero_image_url,
-        about_image_url,
-      },
-    });
+   const settings = await prisma.store_settings.upsert({
+  where: { id: 1 },
+  update: {
+    phone, email, address,
+    hours_week, hours_saturday, hours_sunday,
+    instagram_url, facebook_url,
+    hero_image_url, about_image_url,
+  },
+  create: {
+    id: 1, // ← adicione esta linha
+    phone, email, address,
+    hours_week, hours_saturday, hours_sunday,
+    instagram_url, facebook_url,
+    hero_image_url, about_image_url,
+  },
+});
 
     res.json(settings);
   } catch (error) {
@@ -370,21 +304,20 @@ app.put("/api/settings", requireAdmin, async (req: Request, res: Response) => {
   }
 });
 
-// Serve uploaded files
+// ─── Static & Error handlers ──────────────────────────────────────────────────
+
 app.use("/uploads", express.static(localUploadsDir));
 
-// Error handling middleware
-app.use((error: any, req: Request, res: Response, next: NextFunction) => {
+app.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error("Unhandled error:", error);
   res.status(500).json({ error: "Internal server error" });
 });
 
-// 404 handler
-app.use((req: Request, res: Response) => {
+app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 API Server running on port ${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🚀 API running on port ${PORT}`);
+  console.log(`📊 Health: http://localhost:${PORT}/api/health`);
 });
